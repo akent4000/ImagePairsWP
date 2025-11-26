@@ -1,9 +1,9 @@
 <?php
 /**
  * Plugin Name: Image Pairs
- * Description: Пары изображений с темами, подписями и лайтбоксом. Шорткод [image_pairs].
- * Version: 1.8.0
- * Author: akent4000
+ * Description: Пары изображений с темами, подписями, лайтбоксом и динамической подгрузкой. Шорткод [image_pairs].
+ * Version: 2.0.0
+ * Author: you
  */
 
 if (!defined('ABSPATH')) exit;
@@ -100,7 +100,7 @@ function ip_render_metabox($post) {
     <div class="ip-caption-wrap">
       <label for="ip_caption">Подпись под парой (текст):</label>
       <input type="text" id="ip_caption" name="ip_caption" value="<?php echo esc_attr($caption); ?>" placeholder="Например: Реставрация цеха, 2023">
-      <p class="description">Этот текст отобразится под парой в теге &lt;span&gt;.</p>
+      <p class="description">Этот текст отобразится под парой в теге &lt;span&gt;</p>
     </div>
 
     <script>
@@ -143,10 +143,60 @@ add_action('save_post_image_pair', function ($post_id) {
     update_post_meta($post_id, '_ip_caption', $caption);
 }, 10, 1);
 
-/* ---------------- 4) Shortcode с фильтрами, подписями и shuffle ---------------- */
+/* ---------------- 3.1) Админ медиа ---------------- */
+add_action('admin_enqueue_scripts', function(){
+    global $post_type;
+    if ($post_type === 'image_pair') wp_enqueue_media();
+});
+
+/* ---------------- 3.2) Фильтр в списке ---------------- */
+add_action('restrict_manage_posts', function(){
+    global $typenow;
+    if ($typenow !== 'image_pair') return;
+    $taxonomy = 'ip_topic';
+    $selected = isset($_GET[$taxonomy]) ? sanitize_text_field($_GET[$taxonomy]) : '';
+    wp_dropdown_categories([
+        'show_option_all' => 'Все темы',
+        'taxonomy'        => $taxonomy,
+        'name'            => $taxonomy,
+        'orderby'         => 'name',
+        'selected'        => $selected,
+        'hierarchical'    => true,
+        'hide_empty'      => false,
+        'value_field'     => 'slug',
+    ]);
+});
+add_filter('parse_query', function($query){
+    global $pagenow;
+    if ($pagenow !== 'edit.php' || !isset($query->query['post_type']) || $query->query['post_type'] !== 'image_pair') return;
+    $taxonomy = 'ip_topic';
+    if (!empty($_GET[$taxonomy])) {
+        $term = sanitize_text_field($_GET[$taxonomy]);
+        $query->query_vars[$taxonomy] = $term;
+    }
+});
+
+/* ---------------- 4) Регистрация фронтенд-скрипта (infinite scroll) ---------------- */
+add_action('wp_enqueue_scripts', function () {
+    wp_register_script(
+        'image-pairs-frontend',
+        plugins_url('image-pairs-frontend.js', __FILE__),
+        [],
+        '1.0.0',
+        true
+    );
+
+    wp_localize_script('image-pairs-frontend', 'ipPairs', [
+        'ajaxUrl' => admin_url('admin-ajax.php'),
+        'nonce'   => wp_create_nonce('ip_load_pairs'),
+    ]);
+});
+
+/* ---------------- 5) Shortcode с фильтрами, подписями, shuffle и infinite scroll ---------------- */
 $GLOBALS['ip_enqueue_lightbox'] = false;
 
 add_shortcode('image_pairs', function ($atts) {
+
     $a = shortcode_atts([
         'orderby'   => 'date',
         'order'     => 'DESC',
@@ -155,11 +205,13 @@ add_shortcode('image_pairs', function ($atts) {
         'topic_ids' => '',
         'operator'  => 'IN',
         'shuffle'   => '0',
-		'captions'  => '1',
+        'captions'  => '1',
+        'per_page'  => 20, // новое: сколько пар за один раз
     ], $atts);
 
-    $shuffle = in_array(strtolower((string) $a['shuffle']), ['1','true','yes','on'], true);
-	$show_captions = !in_array(strtolower((string) $a['captions']), ['0','false','no','off'], true);
+    $shuffle       = in_array(strtolower((string) $a['shuffle']), ['1','true','yes','on'], true);
+    $show_captions = !in_array(strtolower((string) $a['captions']), ['0','false','no','off'], true);
+    $per_page      = max(1, (int) $a['per_page']);
 
     $tax_query = [];
 
@@ -185,16 +237,21 @@ add_shortcode('image_pairs', function ($atts) {
             ];
         }
     }
-    if (count($tax_query) > 1) $tax_query = array_merge(['relation' => 'AND'], $tax_query);
+    if (count($tax_query) > 1) {
+        $tax_query = array_merge(['relation' => 'AND'], $tax_query);
+    }
 
     $args = [
         'post_type'      => 'image_pair',
-        'posts_per_page' => -1,
+        'posts_per_page' => $per_page,
+        'paged'          => 1,
         'orderby'        => sanitize_key($a['orderby']),
         'order'          => $a['order'] === 'ASC' ? 'ASC' : 'DESC',
-        'no_found_rows'  => true,
+        'no_found_rows'  => false, // нужно для max_num_pages
     ];
-    if (!empty($tax_query)) $args['tax_query'] = $tax_query;
+    if (!empty($tax_query)) {
+        $args['tax_query'] = $tax_query;
+    }
 
     $q = new WP_Query($args);
     if (!$q->have_posts()) return '';
@@ -209,6 +266,9 @@ add_shortcode('image_pairs', function ($atts) {
 
     $instance = wp_unique_id('ip-instance-');
 
+    // подключаем скрипт infinite scroll
+    wp_enqueue_script('image-pairs-frontend');
+
     ob_start(); ?>
     <style>
       .ip-wrap{display:grid;grid-template-columns:1fr;gap:0}
@@ -220,7 +280,6 @@ add_shortcode('image_pairs', function ($atts) {
       .ip-caption{
         display:block;
         margin-top:8px;
-        /* типографика как на скрине: */
         font-family: "Manrope", Inter, "Segoe UI", Roboto, Arial, sans-serif;
         font-size:14px;
         font-weight:600;
@@ -231,8 +290,13 @@ add_shortcode('image_pairs', function ($atts) {
       @media (max-width:640px){
         .ip-row{grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}
       }
+      .ip-scroll-sentinel{width:100%;height:1px;}
     </style>
-    <div class="ip-wrap" data-ip-instance="<?php echo esc_attr($instance); ?>">
+    <div class="ip-wrap"
+         data-ip-instance="<?php echo esc_attr($instance); ?>"
+         data-page="1"
+         data-per-page="<?php echo esc_attr($per_page); ?>"
+         data-atts="<?php echo esc_attr( wp_json_encode( $a ) ); ?>">
       <?php while($q->have_posts()):
         $q->the_post();
         $img1 = (int) get_post_meta(get_the_ID(), '_ip_img1', true);
@@ -270,46 +334,164 @@ add_shortcode('image_pairs', function ($atts) {
           <?php if ($show_captions && $caption !== '') { ?>
             <span class="ip-caption"><?php echo esc_html($caption); ?></span>
           <?php } ?>
-
         </div>
       <?php endwhile; wp_reset_postdata(); ?>
+
+      <div class="ip-scroll-sentinel"></div>
     </div>
     <?php
     return ob_get_clean();
 });
 
-/* ---------------- 5) Админ медиа ---------------- */
-add_action('admin_enqueue_scripts', function(){
-    global $post_type;
-    if ($post_type === 'image_pair') wp_enqueue_media();
-});
+/* ---------------- 6) AJAX-подгрузка следующих страниц ---------------- */
+add_action('wp_ajax_ip_load_pairs', 'ip_load_pairs_ajax');
+add_action('wp_ajax_nopriv_ip_load_pairs', 'ip_load_pairs_ajax');
 
-/* ---------------- 6) Фильтр в списке ---------------- */
-add_action('restrict_manage_posts', function(){
-    global $typenow;
-    if ($typenow !== 'image_pair') return;
-    $taxonomy = 'ip_topic';
-    $selected = isset($_GET[$taxonomy]) ? sanitize_text_field($_GET[$taxonomy]) : '';
-    wp_dropdown_categories([
-        'show_option_all' => 'Все темы',
-        'taxonomy'        => $taxonomy,
-        'name'            => $taxonomy,
-        'orderby'         => 'name',
-        'selected'        => $selected,
-        'hierarchical'    => true,
-        'hide_empty'      => false,
-        'value_field'     => 'slug',
-    ]);
-});
-add_filter('parse_query', function($query){
-    global $pagenow;
-    if ($pagenow !== 'edit.php' || !isset($query->query['post_type']) || $query->query['post_type'] !== 'image_pair') return;
-    $taxonomy = 'ip_topic';
-    if (!empty($_GET[$taxonomy])) {
-        $term = sanitize_text_field($_GET[$taxonomy]);
-        $query->query_vars[$taxonomy] = $term;
+function ip_load_pairs_ajax() {
+    check_ajax_referer('ip_load_pairs', 'nonce');
+
+    $page     = isset($_POST['page']) ? max(1, (int) $_POST['page']) : 1;
+    $per_page = isset($_POST['per_page']) ? max(1, (int) $_POST['per_page']) : 20;
+    $atts_raw = isset($_POST['atts']) ? wp_unslash($_POST['atts']) : '{}';
+    $instance = isset($_POST['instance']) ? sanitize_text_field(wp_unslash($_POST['instance'])) : '';
+
+    $atts = json_decode($atts_raw, true);
+    if (!is_array($atts)) {
+        $atts = [];
     }
-});
+
+    $defaults = [
+        'orderby'   => 'date',
+        'order'     => 'DESC',
+        'size'      => 'large',
+        'topic'     => '',
+        'topic_ids' => '',
+        'operator'  => 'IN',
+        'shuffle'   => '0',
+        'captions'  => '1',
+        'per_page'  => $per_page,
+    ];
+    $a = shortcode_atts($defaults, $atts);
+
+    $shuffle       = in_array(strtolower((string) $a['shuffle']), ['1','true','yes','on'], true);
+    $show_captions = !in_array(strtolower((string) $a['captions']), ['0','false','no','off'], true);
+    $per_page      = max(1, (int) $a['per_page']);
+
+    $tax_query = [];
+
+    if (!empty($a['topic'])) {
+        $slugs = array_filter(array_map('sanitize_title', array_map('trim', explode(',', $a['topic']))));
+        if ($slugs) {
+            $tax_query[] = [
+                'taxonomy' => 'ip_topic',
+                'field'    => 'slug',
+                'terms'    => $slugs,
+                'operator' => in_array($a['operator'], ['IN','AND','NOT IN'], true) ? $a['operator'] : 'IN',
+            ];
+        }
+    }
+    if (!empty($a['topic_ids'])) {
+        $ids = array_filter(array_map('intval', explode(',', $a['topic_ids'])));
+        if ($ids) {
+            $tax_query[] = [
+                'taxonomy' => 'ip_topic',
+                'field'    => 'term_id',
+                'terms'    => $ids,
+                'operator' => in_array($a['operator'], ['IN','AND','NOT IN'], true) ? $a['operator'] : 'IN',
+            ];
+        }
+    }
+    if (count($tax_query) > 1) {
+        $tax_query = array_merge(['relation' => 'AND'], $tax_query);
+    }
+
+    $args = [
+        'post_type'      => 'image_pair',
+        'posts_per_page' => $per_page,
+        'paged'          => $page,
+        'orderby'        => sanitize_key($a['orderby']),
+        'order'          => $a['order'] === 'ASC' ? 'ASC' : 'DESC',
+        'no_found_rows'  => false,
+    ];
+    if (!empty($tax_query)) {
+        $args['tax_query'] = $tax_query;
+    }
+
+    $q = new WP_Query($args);
+
+    if (!$q->have_posts()) {
+        wp_send_json_success([
+            'html'     => '',
+            'has_more' => false,
+        ]);
+    }
+
+    if ($shuffle && !empty($q->posts)) {
+        $q->posts = array_values($q->posts);
+        shuffle($q->posts);
+        $q->rewind_posts();
+    }
+
+    if ($instance === '') {
+        $instance = wp_unique_id('ip-instance-');
+    }
+
+    ob_start();
+
+    while ($q->have_posts()) {
+        $q->the_post();
+
+        $img1    = (int) get_post_meta(get_the_ID(), '_ip_img1', true);
+        $img2    = (int) get_post_meta(get_the_ID(), '_ip_img2', true);
+        $caption = get_post_meta(get_the_ID(), '_ip_caption', true);
+        if (!$img1 && !$img2) continue;
+
+        $src1  = $img1 ? wp_get_attachment_image_src($img1, $a['size']) : null;
+        $src2  = $img2 ? wp_get_attachment_image_src($img2, $a['size']) : null;
+        $full1 = $img1 ? wp_get_attachment_image_src($img1, 'full') : null;
+        $full2 = $img2 ? wp_get_attachment_image_src($img2, 'full') : null;
+
+        $alt1 = $img1 ? trim(get_post_meta($img1, '_wp_attachment_image_alt', true)) : '';
+        if(!$alt1 && $img1) $alt1 = get_the_title($img1);
+        $alt2 = $img2 ? trim(get_post_meta($img2, '_wp_attachment_image_alt', true)) : '';
+        if(!$alt2 && $img2) $alt2 = get_the_title($img2);
+        ?>
+        <div class="ip-pair">
+          <div class="ip-row">
+            <div>
+              <?php if($src1){ ?>
+                <a href="<?php echo esc_url($full1[0]); ?>" class="ip-zoom" data-ipbox="<?php echo esc_attr($instance); ?>">
+                  <img loading="lazy" decoding="async" src="<?php echo esc_url($src1[0]); ?>" alt="<?php echo esc_attr($alt1); ?>">
+                </a>
+              <?php } ?>
+            </div>
+            <div>
+              <?php if($src2){ ?>
+                <a href="<?php echo esc_url($full2[0]); ?>" class="ip-zoom" data-ipbox="<?php echo esc_attr($instance); ?>">
+                  <img loading="lazy" decoding="async" src="<?php echo esc_url($src2[0]); ?>" alt="<?php echo esc_attr($alt2); ?>">
+                </a>
+              <?php } ?>
+            </div>
+          </div>
+          <?php if ($show_captions && $caption !== '') { ?>
+            <span class="ip-caption"><?php echo esc_html($caption); ?></span>
+          <?php } ?>
+        </div>
+        <?php
+    }
+
+    $max_pages = $q->max_num_pages;
+    wp_reset_postdata();
+
+    $html = ob_get_clean();
+    $has_more = ($page < $max_pages);
+
+    wp_send_json_success([
+        'html'      => $html,
+        'has_more'  => $has_more,
+        'next_page' => $page + 1,
+    ]);
+}
 
 /* ---------------- 7) Лайтбокс: CSS/JS ---------------- */
 add_action('wp_footer', function(){
@@ -431,3 +613,4 @@ add_action('wp_footer', function(){
     </script>
     <?php
 });
+
