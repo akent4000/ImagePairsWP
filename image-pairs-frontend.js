@@ -60,7 +60,7 @@
       });
     }, {
       root: null,
-      rootMargin: '0px 0px 300px 0px', // подгружаем, когда до низа остаётся ~300px
+      rootMargin: '0px 0px 500px 0px', // подгружаем, когда до низа остаётся ~300px
       threshold: 0
     });
 

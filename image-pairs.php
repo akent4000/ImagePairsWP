@@ -2,7 +2,7 @@
 /**
  * Plugin Name: Image Pairs
  * Description: Пары изображений с темами, подписями, лайтбоксом и динамической подгрузкой. Шорткод [image_pairs].
- * Version: 2.0.0
+ * Version: 2.2.1
  * Author: you
  */
 
@@ -33,6 +33,162 @@ add_action('init', function () {
         'show_in_rest'  => true,
     ]);
 });
+
+function ip_normalize_atts($atts) {
+    $defaults = [
+        'orderby'   => 'date',
+        'order'     => 'DESC',
+        'size'      => 'large',
+        'topic'     => '',
+        'topic_ids' => '',
+        'operator'  => 'IN',
+        'shuffle'   => '0',
+        'captions'  => '1',
+        'per_page'  => '20', // для бесконечной прокрутки
+        'seed'      => '',   // для стабильного shuffle
+    ];
+
+    $a = shortcode_atts($defaults, $atts);
+
+    // нормализуем флаги
+    $a['shuffle']  = in_array(strtolower((string)$a['shuffle']),  ['1','true','yes','on'], true) ? '1' : '0';
+    $a['captions'] = in_array(strtolower((string)$a['captions']), ['0','false','no','off'], true) ? '0' : '1';
+
+    // seed – если не пришёл, генерим
+    if (empty($a['seed'])) {
+        $a['seed'] = (string) wp_rand(1, PHP_INT_MAX);
+    }
+
+    $a['per_page'] = max(1, (int)$a['per_page']);
+
+    return $a;
+}
+
+// Хелпер: собираем tax_query и базовый WP_Query args
+function ip_build_base_query_args(array $a) {
+    $tax_query = [];
+
+    if (!empty($a['topic'])) {
+        $slugs = array_filter(array_map('sanitize_title', array_map('trim', explode(',', $a['topic']))));
+        if ($slugs) {
+            $tax_query[] = [
+                'taxonomy' => 'ip_topic',
+                'field'    => 'slug',
+                'terms'    => $slugs,
+                'operator' => in_array($a['operator'], ['IN','AND','NOT IN'], true) ? $a['operator'] : 'IN',
+            ];
+        }
+    }
+    if (!empty($a['topic_ids'])) {
+        $ids = array_filter(array_map('intval', explode(',', $a['topic_ids'])));
+        if ($ids) {
+            $tax_query[] = [
+                'taxonomy' => 'ip_topic',
+                'field'    => 'term_id',
+                'terms'    => $ids,
+                'operator' => in_array($a['operator'], ['IN','AND','NOT IN'], true) ? $a['operator'] : 'IN',
+            ];
+        }
+    }
+    if (count($tax_query) > 1) {
+        $tax_query = array_merge(['relation' => 'AND'], $tax_query);
+    }
+
+    $args = [
+        'post_type'      => 'image_pair',
+        'posts_per_page' => -1, // ВСЕ пары
+        'fields'         => 'ids',
+        'orderby'        => sanitize_key($a['orderby']),
+        'order'          => ($a['order'] === 'ASC' ? 'ASC' : 'DESC'),
+        'no_found_rows'  => true,
+    ];
+    if (!empty($tax_query)) {
+        $args['tax_query'] = $tax_query;
+    }
+
+    return $args;
+}
+
+// Хелпер: стабильный shuffle по seed (Фишер–Йетс)
+function ip_shuffle_with_seed(array $items, $seed) {
+    if (count($items) < 2) return $items;
+
+    $result = array_values($items);
+
+    $seed = (int) $seed;
+    mt_srand($seed);
+    for ($i = count($result) - 1; $i > 0; $i--) {
+        $j = mt_rand(0, $i);
+        $tmp = $result[$i];
+        $result[$i] = $result[$j];
+        $result[$j] = $tmp;
+    }
+    mt_srand(); // вернуть генератор в «нормальное» состояние
+
+    return $result;
+}
+
+// Хелпер: получить ID нужной страницы
+function ip_get_pairs_page_ids(array $a, $page, $per_page, &$total) {
+    $args = ip_build_base_query_args($a);
+
+    $ids = get_posts($args); // все ID по фильтрам
+    $total = count($ids);
+
+    if ($a['shuffle'] === '1' && $total > 1) {
+        $ids = ip_shuffle_with_seed($ids, $a['seed']);
+    }
+
+    $page = max(1, (int)$page);
+    $per_page = max(1, (int)$per_page);
+
+    $offset = ($page - 1) * $per_page;
+
+    return array_slice($ids, $offset, $per_page);
+}
+
+/**
+ * На вход: URL обычной картинки (jpg/png/…)
+ * На выход: ['orig' => url к исходнику, 'webp' => url к webp или '']
+ */
+function ip_get_src_with_webp($url) {
+    $result = [
+        'orig' => $url,
+        'webp' => '',
+    ];
+
+    if (empty($url)) {
+        return $result;
+    }
+
+    $uploads = wp_get_upload_dir();
+    if (empty($uploads['baseurl']) || empty($uploads['basedir'])) {
+        return $result;
+    }
+
+    // URL не из папки uploads – не трогаем
+    if (strpos($url, $uploads['baseurl']) !== 0) {
+        return $result;
+    }
+
+    // Путь к оригиналу на диске
+    $relative = substr($url, strlen($uploads['baseurl']));
+    // бывает без /, подстрахуемся
+    if (!empty($relative) && $relative[0] === '/') {
+        $path_jpg = $uploads['basedir'] . $relative;
+    } else {
+        $path_jpg = trailingslashit($uploads['basedir']) . ltrim($relative, '/');
+    }
+
+    // Путь к webp (просто добавляем .webp – как ты и хотел)
+    $path_webp = $path_jpg . '.webp';
+
+    if (file_exists($path_webp)) {
+        $result['webp'] = $url . '.webp';
+    }
+
+    return $result;
+}
 
 /* ---------------- 2) Taxonomy ---------------- */
 add_action('init', function () {
@@ -178,9 +334,9 @@ add_filter('parse_query', function($query){
 
 /* ---------------- 4) Регистрация фронтенд-скрипта (infinite scroll) ---------------- */
 add_action('wp_enqueue_scripts', function () {
-    wp_register_script(
+    wp_enqueue_script(
         'image-pairs-frontend',
-        plugins_url('image-pairs-frontend.js', __FILE__),
+        plugin_dir_url(__FILE__) . 'image-pairs-frontend.js',
         [],
         '1.0.0',
         true
@@ -188,91 +344,37 @@ add_action('wp_enqueue_scripts', function () {
 
     wp_localize_script('image-pairs-frontend', 'ipPairs', [
         'ajaxUrl' => admin_url('admin-ajax.php'),
-        'nonce'   => wp_create_nonce('ip_load_pairs'),
+        'nonce'   => wp_create_nonce('ip_pairs_nonce'),
     ]);
 });
-
-/* ---------------- 5) Shortcode с фильтрами, подписями, shuffle и infinite scroll ---------------- */
+/* ---------------- 4) Shortcode с фильтрами, подписями, shuffle и infinite scroll ---------------- */
 $GLOBALS['ip_enqueue_lightbox'] = false;
 
 add_shortcode('image_pairs', function ($atts) {
+    $a = ip_normalize_atts($atts);
 
-    $a = shortcode_atts([
-        'orderby'   => 'date',
-        'order'     => 'DESC',
-        'size'      => 'large',
-        'topic'     => '',
-        'topic_ids' => '',
-        'operator'  => 'IN',
-        'shuffle'   => '0',
-        'captions'  => '1',
-        'per_page'  => 20, // новое: сколько пар за один раз
-    ], $atts);
+    $page     = 1;
+    $per_page = $a['per_page'];
 
-    $shuffle       = in_array(strtolower((string) $a['shuffle']), ['1','true','yes','on'], true);
-    $show_captions = !in_array(strtolower((string) $a['captions']), ['0','false','no','off'], true);
-    $per_page      = max(1, (int) $a['per_page']);
+    $total = 0;
+    $ids   = ip_get_pairs_page_ids($a, $page, $per_page, $total);
 
-    $tax_query = [];
-
-    if (!empty($a['topic'])) {
-        $slugs = array_filter(array_map('sanitize_title', array_map('trim', explode(',', $a['topic']))));
-        if ($slugs) {
-            $tax_query[] = [
-                'taxonomy' => 'ip_topic',
-                'field'    => 'slug',
-                'terms'    => $slugs,
-                'operator' => in_array($a['operator'], ['IN','AND','NOT IN'], true) ? $a['operator'] : 'IN',
-            ];
-        }
-    }
-    if (!empty($a['topic_ids'])) {
-        $ids = array_filter(array_map('intval', explode(',', $a['topic_ids'])));
-        if ($ids) {
-            $tax_query[] = [
-                'taxonomy' => 'ip_topic',
-                'field'    => 'term_id',
-                'terms'    => $ids,
-                'operator' => in_array($a['operator'], ['IN','AND','NOT IN'], true) ? $a['operator'] : 'IN',
-            ];
-        }
-    }
-    if (count($tax_query) > 1) {
-        $tax_query = array_merge(['relation' => 'AND'], $tax_query);
-    }
-
-    $args = [
-        'post_type'      => 'image_pair',
-        'posts_per_page' => $per_page,
-        'paged'          => 1,
-        'orderby'        => sanitize_key($a['orderby']),
-        'order'          => $a['order'] === 'ASC' ? 'ASC' : 'DESC',
-        'no_found_rows'  => false, // нужно для max_num_pages
-    ];
-    if (!empty($tax_query)) {
-        $args['tax_query'] = $tax_query;
-    }
-
-    $q = new WP_Query($args);
-    if (!$q->have_posts()) return '';
-
-    if ($shuffle && !empty($q->posts)) {
-        $q->posts = array_values($q->posts);
-        shuffle($q->posts);
-        $q->rewind_posts();
-    }
+    if (empty($ids)) return '';
 
     $GLOBALS['ip_enqueue_lightbox'] = true;
 
-    $instance = wp_unique_id('ip-instance-');
+    $instance   = wp_unique_id('ip-instance-');
+    $show_captions = ($a['captions'] === '1');
 
-    // подключаем скрипт infinite scroll
-    wp_enqueue_script('image-pairs-frontend');
+    // эти же атрибуты (с seed!) будут уходить в ajax
+    $atts_for_js = wp_json_encode($a);
+
+    $has_more = ($per_page < $total);
 
     ob_start(); ?>
     <style>
       .ip-wrap{display:grid;grid-template-columns:1fr;gap:0}
-      .ip-pair{margin-bottom:20px} /* расстояние между парами после подписи */
+      .ip-pair{margin-bottom:20px}
       .ip-row{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px}
       .ip-row a{display:block;border-radius:10px;overflow:hidden}
       .ip-row img{width:100%;height:auto;display:block}
@@ -290,43 +392,65 @@ add_shortcode('image_pairs', function ($atts) {
       @media (max-width:640px){
         .ip-row{grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}
       }
-      .ip-scroll-sentinel{width:100%;height:1px;}
+
+      .ip-scroll-sentinel{
+        height:1px;
+        width:100%;
+      }
     </style>
     <div class="ip-wrap"
          data-ip-instance="<?php echo esc_attr($instance); ?>"
-         data-page="1"
          data-per-page="<?php echo esc_attr($per_page); ?>"
-         data-atts="<?php echo esc_attr( wp_json_encode( $a ) ); ?>">
-      <?php while($q->have_posts()):
-        $q->the_post();
-        $img1 = (int) get_post_meta(get_the_ID(), '_ip_img1', true);
-        $img2 = (int) get_post_meta(get_the_ID(), '_ip_img2', true);
-        $caption = get_post_meta(get_the_ID(), '_ip_caption', true);
-        if(!$img1 && !$img2) continue;
+         data-page="<?php echo esc_attr($page); ?>"
+         data-atts="<?php echo esc_attr($atts_for_js); ?>">
+      <?php
+      foreach ($ids as $post_id):
+        $img1    = (int) get_post_meta($post_id, '_ip_img1', true);
+        $img2    = (int) get_post_meta($post_id, '_ip_img2', true);
+        $caption = get_post_meta($post_id, '_ip_caption', true);
+        if (!$img1 && !$img2) continue;
 
         $src1  = $img1 ? wp_get_attachment_image_src($img1, $a['size']) : null;
         $src2  = $img2 ? wp_get_attachment_image_src($img2, $a['size']) : null;
         $full1 = $img1 ? wp_get_attachment_image_src($img1, 'full') : null;
         $full2 = $img2 ? wp_get_attachment_image_src($img2, 'full') : null;
+        $src1_webp = $src1 ? ip_get_src_with_webp($src1[0]) : null;
+        $src2_webp = $src2 ? ip_get_src_with_webp($src2[0]) : null;
 
         $alt1 = $img1 ? trim(get_post_meta($img1, '_wp_attachment_image_alt', true)) : '';
-        if(!$alt1 && $img1) $alt1 = get_the_title($img1);
+        if (!$alt1 && $img1) $alt1 = get_the_title($img1);
         $alt2 = $img2 ? trim(get_post_meta($img2, '_wp_attachment_image_alt', true)) : '';
-        if(!$alt2 && $img2) $alt2 = get_the_title($img2);
+        if (!$alt2 && $img2) $alt2 = get_the_title($img2);
       ?>
         <div class="ip-pair">
           <div class="ip-row">
             <div>
-              <?php if($src1){ ?>
+              <?php if ($src1) { ?>
                 <a href="<?php echo esc_url($full1[0]); ?>" class="ip-zoom" data-ipbox="<?php echo esc_attr($instance); ?>">
-                  <img loading="lazy" decoding="async" src="<?php echo esc_url($src1[0]); ?>" alt="<?php echo esc_attr($alt1); ?>">
+                  <picture>
+                    <?php if (!empty($src1_webp['webp'])): ?>
+                      <source srcset="<?php echo esc_url($src1_webp['webp']); ?>" type="image/webp">
+                    <?php endif; ?>
+                    <img loading="lazy"
+                        decoding="async"
+                        src="<?php echo esc_url($src1_webp['orig']); ?>"
+                        alt="<?php echo esc_attr($alt1); ?>">
+                  </picture>
                 </a>
               <?php } ?>
             </div>
             <div>
-              <?php if($src2){ ?>
+              <?php if ($src2) { ?>
                 <a href="<?php echo esc_url($full2[0]); ?>" class="ip-zoom" data-ipbox="<?php echo esc_attr($instance); ?>">
-                  <img loading="lazy" decoding="async" src="<?php echo esc_url($src2[0]); ?>" alt="<?php echo esc_attr($alt2); ?>">
+                  <picture>
+                    <?php if (!empty($src2_webp['webp'])): ?>
+                      <source srcset="<?php echo esc_url($src2_webp['webp']); ?>" type="image/webp">
+                    <?php endif; ?>
+                    <img loading="lazy"
+                        decoding="async"
+                        src="<?php echo esc_url($src2_webp['orig']); ?>"
+                        alt="<?php echo esc_attr($alt2); ?>">
+                  </picture>
                 </a>
               <?php } ?>
             </div>
@@ -335,140 +459,95 @@ add_shortcode('image_pairs', function ($atts) {
             <span class="ip-caption"><?php echo esc_html($caption); ?></span>
           <?php } ?>
         </div>
-      <?php endwhile; wp_reset_postdata(); ?>
+      <?php endforeach; ?>
 
-      <div class="ip-scroll-sentinel"></div>
+      <?php if ($has_more) { ?>
+        <div class="ip-scroll-sentinel"></div>
+      <?php } ?>
     </div>
     <?php
     return ob_get_clean();
 });
 
-/* ---------------- 6) AJAX-подгрузка следующих страниц ---------------- */
-add_action('wp_ajax_ip_load_pairs', 'ip_load_pairs_ajax');
-add_action('wp_ajax_nopriv_ip_load_pairs', 'ip_load_pairs_ajax');
+/* ---------------- 4.1) AJAX для бесконечной прокрутки ---------------- */
+add_action('wp_ajax_ip_load_pairs', 'ip_ajax_load_pairs');
+add_action('wp_ajax_nopriv_ip_load_pairs', 'ip_ajax_load_pairs');
 
-function ip_load_pairs_ajax() {
-    check_ajax_referer('ip_load_pairs', 'nonce');
+function ip_ajax_load_pairs() {
+    if (!isset($_POST['nonce']) || !wp_verify_nonce($_POST['nonce'], 'ip_pairs_nonce')) {
+        wp_send_json_error(['message' => 'Bad nonce']);
+    }
 
-    $page     = isset($_POST['page']) ? max(1, (int) $_POST['page']) : 1;
-    $per_page = isset($_POST['per_page']) ? max(1, (int) $_POST['per_page']) : 20;
-    $atts_raw = isset($_POST['atts']) ? wp_unslash($_POST['atts']) : '{}';
-    $instance = isset($_POST['instance']) ? sanitize_text_field(wp_unslash($_POST['instance'])) : '';
+    $page     = isset($_POST['page']) ? (int) $_POST['page'] : 1;
+    $per_page = isset($_POST['per_page']) ? (int) $_POST['per_page'] : 20;
+    $atts_raw = isset($_POST['atts']) ? stripslashes($_POST['atts']) : '{}';
 
     $atts = json_decode($atts_raw, true);
-    if (!is_array($atts)) {
-        $atts = [];
-    }
+    if (!is_array($atts)) $atts = [];
 
-    $defaults = [
-        'orderby'   => 'date',
-        'order'     => 'DESC',
-        'size'      => 'large',
-        'topic'     => '',
-        'topic_ids' => '',
-        'operator'  => 'IN',
-        'shuffle'   => '0',
-        'captions'  => '1',
-        'per_page'  => $per_page,
-    ];
-    $a = shortcode_atts($defaults, $atts);
+    $a = ip_normalize_atts($atts);
+    // page и per_page берём из запроса (а не из атрибута шорткода)
+    $total = 0;
+    $ids   = ip_get_pairs_page_ids($a, $page, $per_page, $total);
 
-    $shuffle       = in_array(strtolower((string) $a['shuffle']), ['1','true','yes','on'], true);
-    $show_captions = !in_array(strtolower((string) $a['captions']), ['0','false','no','off'], true);
-    $per_page      = max(1, (int) $a['per_page']);
-
-    $tax_query = [];
-
-    if (!empty($a['topic'])) {
-        $slugs = array_filter(array_map('sanitize_title', array_map('trim', explode(',', $a['topic']))));
-        if ($slugs) {
-            $tax_query[] = [
-                'taxonomy' => 'ip_topic',
-                'field'    => 'slug',
-                'terms'    => $slugs,
-                'operator' => in_array($a['operator'], ['IN','AND','NOT IN'], true) ? $a['operator'] : 'IN',
-            ];
-        }
-    }
-    if (!empty($a['topic_ids'])) {
-        $ids = array_filter(array_map('intval', explode(',', $a['topic_ids'])));
-        if ($ids) {
-            $tax_query[] = [
-                'taxonomy' => 'ip_topic',
-                'field'    => 'term_id',
-                'terms'    => $ids,
-                'operator' => in_array($a['operator'], ['IN','AND','NOT IN'], true) ? $a['operator'] : 'IN',
-            ];
-        }
-    }
-    if (count($tax_query) > 1) {
-        $tax_query = array_merge(['relation' => 'AND'], $tax_query);
-    }
-
-    $args = [
-        'post_type'      => 'image_pair',
-        'posts_per_page' => $per_page,
-        'paged'          => $page,
-        'orderby'        => sanitize_key($a['orderby']),
-        'order'          => $a['order'] === 'ASC' ? 'ASC' : 'DESC',
-        'no_found_rows'  => false,
-    ];
-    if (!empty($tax_query)) {
-        $args['tax_query'] = $tax_query;
-    }
-
-    $q = new WP_Query($args);
-
-    if (!$q->have_posts()) {
+    if (empty($ids)) {
         wp_send_json_success([
             'html'     => '',
             'has_more' => false,
         ]);
     }
 
-    if ($shuffle && !empty($q->posts)) {
-        $q->posts = array_values($q->posts);
-        shuffle($q->posts);
-        $q->rewind_posts();
-    }
-
-    if ($instance === '') {
-        $instance = wp_unique_id('ip-instance-');
-    }
+    $instance = isset($_POST['instance']) ? sanitize_text_field($_POST['instance']) : wp_unique_id('ip-instance-');
+    $show_captions = ($a['captions'] === '1');
 
     ob_start();
-
-    while ($q->have_posts()) {
-        $q->the_post();
-
-        $img1    = (int) get_post_meta(get_the_ID(), '_ip_img1', true);
-        $img2    = (int) get_post_meta(get_the_ID(), '_ip_img2', true);
-        $caption = get_post_meta(get_the_ID(), '_ip_caption', true);
+    foreach ($ids as $post_id) {
+        $img1    = (int) get_post_meta($post_id, '_ip_img1', true);
+        $img2    = (int) get_post_meta($post_id, '_ip_img2', true);
+        $caption = get_post_meta($post_id, '_ip_caption', true);
         if (!$img1 && !$img2) continue;
 
         $src1  = $img1 ? wp_get_attachment_image_src($img1, $a['size']) : null;
         $src2  = $img2 ? wp_get_attachment_image_src($img2, $a['size']) : null;
         $full1 = $img1 ? wp_get_attachment_image_src($img1, 'full') : null;
         $full2 = $img2 ? wp_get_attachment_image_src($img2, 'full') : null;
+        $src1_webp = $src1 ? ip_get_src_with_webp($src1[0]) : null;
+        $src2_webp = $src2 ? ip_get_src_with_webp($src2[0]) : null;
 
         $alt1 = $img1 ? trim(get_post_meta($img1, '_wp_attachment_image_alt', true)) : '';
-        if(!$alt1 && $img1) $alt1 = get_the_title($img1);
+        if (!$alt1 && $img1) $alt1 = get_the_title($img1);
         $alt2 = $img2 ? trim(get_post_meta($img2, '_wp_attachment_image_alt', true)) : '';
-        if(!$alt2 && $img2) $alt2 = get_the_title($img2);
+        if (!$alt2 && $img2) $alt2 = get_the_title($img2);
         ?>
         <div class="ip-pair">
           <div class="ip-row">
             <div>
-              <?php if($src1){ ?>
+              <?php if ($src1) { ?>
                 <a href="<?php echo esc_url($full1[0]); ?>" class="ip-zoom" data-ipbox="<?php echo esc_attr($instance); ?>">
-                  <img loading="lazy" decoding="async" src="<?php echo esc_url($src1[0]); ?>" alt="<?php echo esc_attr($alt1); ?>">
+                  <picture>
+                    <?php if (!empty($src1_webp['webp'])): ?>
+                      <source srcset="<?php echo esc_url($src1_webp['webp']); ?>" type="image/webp">
+                    <?php endif; ?>
+                    <img loading="lazy"
+                        decoding="async"
+                        src="<?php echo esc_url($src1_webp['orig']); ?>"
+                        alt="<?php echo esc_attr($alt1); ?>">
+                  </picture>
                 </a>
               <?php } ?>
             </div>
             <div>
-              <?php if($src2){ ?>
+              <?php if ($src2) { ?>
                 <a href="<?php echo esc_url($full2[0]); ?>" class="ip-zoom" data-ipbox="<?php echo esc_attr($instance); ?>">
-                  <img loading="lazy" decoding="async" src="<?php echo esc_url($src2[0]); ?>" alt="<?php echo esc_attr($alt2); ?>">
+                  <picture>
+                    <?php if (!empty($src2_webp['webp'])): ?>
+                      <source srcset="<?php echo esc_url($src2_webp['webp']); ?>" type="image/webp">
+                    <?php endif; ?>
+                    <img loading="lazy"
+                        decoding="async"
+                        src="<?php echo esc_url($src2_webp['orig']); ?>"
+                        alt="<?php echo esc_attr($alt2); ?>">
+                  </picture>
                 </a>
               <?php } ?>
             </div>
@@ -479,17 +558,15 @@ function ip_load_pairs_ajax() {
         </div>
         <?php
     }
-
-    $max_pages = $q->max_num_pages;
-    wp_reset_postdata();
-
     $html = ob_get_clean();
-    $has_more = ($page < $max_pages);
+
+    $max_page = (int) ceil($total / max(1, $per_page));
+    $has_more = ($page < $max_page);
 
     wp_send_json_success([
         'html'      => $html,
         'has_more'  => $has_more,
-        'next_page' => $page + 1,
+        'next_page' => $page,
     ]);
 }
 
