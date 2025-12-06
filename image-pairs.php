@@ -2,7 +2,7 @@
 /**
  * Plugin Name: Image Pairs
  * Description: Пары изображений с темами, подписями, лайтбоксом и динамической подгрузкой. Шорткод [image_pairs].
- * Version: 2.2.1
+ * Version: 2.2.2
  * Author: you
  */
 
@@ -105,7 +105,10 @@ function ip_build_base_query_args(array $a) {
     if (!empty($tax_query)) {
         $args['tax_query'] = $tax_query;
     }
-
+    if ($a['orderby'] === 'caption') {
+        $args['meta_key'] = '_ip_caption';
+        $args['orderby']  = 'meta_value'; // Сортировка как строка (алфавитная)
+    }
     return $args;
 }
 
