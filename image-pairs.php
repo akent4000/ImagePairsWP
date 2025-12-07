@@ -2,7 +2,7 @@
 /**
  * Plugin Name: Image Pairs
  * Description: Пары изображений с темами, подписями, лайтбоксом и динамической подгрузкой. Шорткод [image_pairs].
- * Version: 2.2.2
+ * Version: 2.2.3
  * Author: you
  */
 
@@ -44,8 +44,9 @@ function ip_normalize_atts($atts) {
         'operator'  => 'IN',
         'shuffle'   => '0',
         'captions'  => '1',
-        'per_page'  => '20', // для бесконечной прокрутки
-        'seed'      => '',   // для стабильного shuffle
+        'per_page'  => '20',
+        'seed'      => '',
+        'hash_salt' => 'default',
     ];
 
     $a = shortcode_atts($defaults, $atts);
@@ -140,6 +141,17 @@ function ip_get_pairs_page_ids(array $a, $page, $per_page, &$total) {
 
     if ($a['shuffle'] === '1' && $total > 1) {
         $ids = ip_shuffle_with_seed($ids, $a['seed']);
+    }
+    elseif ($a['orderby'] === 'hash' && $total > 1) {
+        $salt = (string) $a['hash_salt'];
+        $direction = ($a['order'] === 'ASC') ? 1 : -1;
+
+        usort($ids, function ($id_a, $id_b) use ($salt, $direction) {
+            $hash_a = md5($id_a . $salt);
+            $hash_b = md5($id_b . $salt);
+
+            return strcmp($hash_a, $hash_b) * $direction;
+        });
     }
 
     $page = max(1, (int)$page);
