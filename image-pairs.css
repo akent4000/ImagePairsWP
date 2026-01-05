@@ -1,0 +1,177 @@
+/* =========================================
+   1. Сетка и элементы (Frontend)
+   ========================================= */
+.ip-wrap {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 0;
+}
+
+.ip-pair {
+  margin-bottom: 20px;
+}
+
+.ip-row {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+}
+
+.ip-row a {
+  display: block;
+  border-radius: 10px;
+  overflow: hidden;
+  text-decoration: none; /* Убираем подчеркивание ссылок */
+}
+
+.ip-row img {
+  width: 100%;
+  height: auto;
+  display: block;
+  transition: opacity 0.3s ease;
+}
+
+.ip-row a:hover img {
+  opacity: 0.9;
+}
+
+.ip-caption {
+  display: block;
+  margin-top: 8px;
+  font-family: "Manrope", Inter, "Segoe UI", Roboto, Arial, sans-serif;
+  font-size: 14px;
+  font-weight: 600;
+  text-transform: uppercase;
+  line-height: 1.4;
+  color: inherit; /* Чтобы цвет наследовался от темы */
+}
+
+/* Адаптив для мобильных */
+@media (max-width: 640px) {
+  .ip-row {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px;
+  }
+}
+
+/* Маячок для бесконечной прокрутки */
+.ip-scroll-sentinel {
+  height: 1px;
+  width: 100%;
+  pointer-events: none;
+  opacity: 0;
+}
+
+/* =========================================
+   2. Лайтбокс (Lightbox)
+   ========================================= */
+.ipbox-overlay {
+  position: fixed;
+  inset: 0;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  z-index: 2147483646;
+}
+
+.ipbox-overlay.is-open {
+  display: flex;
+}
+
+.ipbox-overlay::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: #000 !important;
+  opacity: 0.92;
+  pointer-events: none;
+}
+
+.ipbox-stage {
+  position: relative;
+  max-width: 90vw;
+  max-height: 90vh;
+  z-index: 1;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+}
+
+.ipbox-img {
+  max-width: 90vw;
+  max-height: 90vh;
+  display: block;
+  object-fit: contain;
+  box-shadow: 0 10px 30px rgba(0,0,0,0.5);
+}
+
+/* Кнопки лайтбокса */
+.ipbox-close,
+.ipbox-prev,
+.ipbox-next {
+  position: absolute;
+  padding: 12px 14px;
+  background: rgba(0, 0, 0, 0.55);
+  color: #fff;
+  border-radius: 8px;
+  border: none;
+  cursor: pointer;
+  font-size: 18px;
+  line-height: 1;
+  z-index: 2;
+  outline: none;
+  box-shadow: none !important;
+  transition: background 0.2s;
+}
+
+.ipbox-close:hover,
+.ipbox-prev:hover,
+.ipbox-next:hover {
+  background: rgba(255, 255, 255, 0.2);
+}
+
+.ipbox-close {
+  top: 16px;
+  right: 16px;
+  /* Убираем transform, позиционируем жестко */
+}
+
+.ipbox-prev,
+.ipbox-next {
+  top: 50%;
+  transform: translateY(-50%);
+}
+
+.ipbox-prev {
+  left: -56px;
+}
+
+.ipbox-next {
+  right: -56px;
+}
+
+@media (max-width: 768px) {
+  .ipbox-prev {
+    left: 8px;
+  }
+  .ipbox-next {
+    right: 8px;
+  }
+  .ipbox-img {
+    max-width: 95vw;
+  }
+}
+
+/* Блокировка прокрутки фона и скрытие сторонних лайтбоксов */
+body.ipbox-open {
+  overflow: hidden;
+}
+
+body.ipbox-open .elementor-lightbox,
+body.ipbox-open .pswp,
+body.ipbox-open .mfp-wrap,
+body.ipbox-open .glightbox-container,
+body.ipbox-open .lg-container,
+body.ipbox-open .fancybox__container {
+  display: none !important;
+}
