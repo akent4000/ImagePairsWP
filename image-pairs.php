@@ -2,7 +2,7 @@
 /**
  * Plugin Name: Image Pairs
  * Description: Пары изображений с независимым лайтбоксом (плейлист) и бесконечной прокруткой. Шорткод [image_pairs].
- * Version: 3.0.3
+ * Version: 3.0.4
  * Author: Akent4000
  */
 
@@ -53,13 +53,24 @@ function ip_normalize_atts($atts) {
 
     $a = shortcode_atts($defaults, $atts);
 
+    // Приведение типов для флагов
     $a['shuffle']  = in_array(strtolower((string)$a['shuffle']),  ['1','true','yes','on'], true) ? '1' : '0';
     $a['captions'] = in_array(strtolower((string)$a['captions']), ['0','false','no','off'], true) ? '0' : '1';
     $a['load_all'] = in_array(strtolower((string)$a['load_all']), ['1','true','yes','on'], true) ? '1' : '0';
     $a['per_page'] = max(1, (int)$a['per_page']);
 
+    // --- ЛОГИКА ПЕРЕХВАТА RAND ---
+    
+    // Если пользователь явно попросил orderby="rand", принудительно включаем shuffle
+    if ($a['orderby'] === 'rand') {
+        $a['shuffle'] = '1';
+    }
+
+    // Если включен shuffle (явно или через rand), настраиваем хеш-сортировку
     if ($a['shuffle'] === '1') {
-        $a['orderby'] = 'hash';
+        $a['orderby'] = 'hash'; // Подменяем 'rand' или что там было на 'hash' для внутреннего использования
+        
+        // Проверяем hash_salt. Код подтверждает: salt НЕ игнорируется, если передан.
         if (empty($a['hash_salt']) || $a['hash_salt'] === 'default') {
             $a['hash_salt'] = wp_generate_password(6, false);
         }
