@@ -3,7 +3,7 @@
  * Plugin Name: Image Pairs
  * Description: Пары изображений с независимым лайтбоксом (плейлист) и бесконечной прокруткой. Шорткод [image_pairs].
  * Version: 3.0.3
- * Author: you
+ * Author: Akent4000
  */
 
 if (!defined('ABSPATH')) exit;
